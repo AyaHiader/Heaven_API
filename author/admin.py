@@ -4,6 +4,7 @@ from .models import Notification
 @admin.register(Notification)
 class NotificationAdmin(admin.ModelAdmin):
     # Essential fields to display in the list view
+    exclude = ('verification_token',)
     list_display = ('name', 'email', 'scheduled_date', 'is_verified')
     
     # Simple filters for quick data access
@@ -26,3 +27,8 @@ class NotificationAdmin(admin.ModelAdmin):
         'is_verified',
         'verification_token'
     )
+
+
+
+ # This hides the field from the admin interface
+

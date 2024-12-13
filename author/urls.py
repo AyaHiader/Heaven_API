@@ -2,7 +2,10 @@ from django.urls import path
 from .views import *
 
 urlpatterns = [
-    path('', NotificationAPIView.as_view(), name='notification_form'),
-    path('api/notifications/', NotificationAPIView.as_view(), name='create_notification'),
-    path('verify/<str:token>/', VerifyNotificationView.as_view(), name='verify_notification'),
+    path('notifications/', NotificationListView.as_view(), name='notification-list'),
+    path('notifications/create/', NotificationCreateView.as_view(), name='notification-create'),
+    path('notifications/<int:pk>/update/', NotificationUpdateView.as_view(), name='notification-update'),
+    path('notifications/<int:pk>/delete/', NotificationDeleteView.as_view(), name='notification-delete'),
+    path('verify/<str:token>/', VerifyNotificationView.as_view(), name='verify-notification'),
+
 ]
