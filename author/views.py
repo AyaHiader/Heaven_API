@@ -59,13 +59,13 @@ class NotificationCreateView(APIView):
 
     @swagger_auto_schema(
         request_body=NotificationSerializer,
-        operation_description="Create a new notification",
+        operation_description="Create a new notification with time slot validation",
         responses={
             201: openapi.Response(
                 description="Notification created successfully",
                 examples={
                     "application/json": {
-                        "message": "Please check your email to verify your notification"
+                        "message": "Notification submitted successfully. Please wait for admin validation."
                     }
                 }
             )
@@ -74,41 +74,22 @@ class NotificationCreateView(APIView):
     def post(self, request):
         serializer = NotificationSerializer(data=request.data)
         if serializer.is_valid():
-            verification_token = str(uuid.uuid4())
-            expires_at = timezone.now() + timedelta(hours=24)
-
-            notification = serializer.save(
-                verification_token=verification_token,
-                is_verified=False,
-                expires_at=expires_at
-            )
-
-            verification_link = f"{settings.SITE_URL}/verify/{verification_token}"
-
-            try:
-                send_mail(
-                    'Verify Your Notification',
-                    f'Hi {notification.name},\n\n'
-                    f'Please click the following link to verify your notification:\n'
-                    f'{verification_link}\n\n'
-                    f'This link will expire in 24 hours.',
-                    settings.DEFAULT_FROM_EMAIL,
-                    [notification.email],
-                    fail_silently=False,
-                )
-            except Exception as e:
-                logger.error(f"Failed to send email to {notification.email}: {e}")
+            # Validate if the time slot is free
+            scheduled_date = serializer.validated_data['scheduled_date']
+            # Check if any accepted or pending notifications exist for the scheduled date
+            if Notification.objects.filter(scheduled_date=scheduled_date, status__in=['accepted', 'pending']).exists():
                 return Response(
-                    {'message': 'Failed to send verification email'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    {"message": "This time slot is already taken or pending. Please choose a different time."},
+                    status=status.HTTP_400_BAD_REQUEST
                 )
-
+            
+            # Save notification as pending
+            serializer.save(status='pending')
             return Response(
-                {'message': 'Please check your email to verify your notification'},
+                {"message": "Notification submitted successfully. Please wait for admin validation."},
                 status=status.HTTP_201_CREATED
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
 
 class NotificationUpdateView(APIView):
     """
@@ -178,75 +159,47 @@ class NotificationDeleteView(APIView):
                 {'message': 'Notification not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-class VerifyNotificationView(APIView):
-    def _get_notification(self, token=None):
-        """
-        Retrieve a notification by its verification token.
-        """
+
+class NotificationAdminDecisionView(APIView):
+    """
+    Allows the admin to accept or reject a notification request via API.
+    This view will update the status of the notification, but email sending is handled in the Django Admin.
+    """
+
+    def post(self, request, pk=None):
         try:
-            return Notification.objects.get(verification_token=token, is_verified=False)
+            # Retrieve the notification by its primary key
+            notification = Notification.objects.get(pk=pk)
         except Notification.DoesNotExist:
-            return None
+            return Response(
+                {'message': 'Notification not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-    def get(self, request, token):
-        notification = self._get_notification(token)
-        if not notification:
-            logger.error(f"Invalid or already used token: {token}")
-            return Response({
-                "message": "Invalid or already used verification token.",
-                "status": "error"
-            }, status=status.HTTP_404_NOT_FOUND)
+        # Ensure the admin action is valid
+        action = request.data.get('action', '').lower()
+        if action not in ['accept', 'reject']:
+            return Response(
+                {'message': "Invalid action. Please use 'accept' or 'reject'."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        # Handle token expiration
-        if notification.expires_at is None or notification.expires_at < timezone.now():
-            new_token = secrets.token_urlsafe(32)
-            notification.verification_token = new_token
-            notification.expires_at = timezone.now() + timedelta(hours=24)
+        # If the action is 'accept', set the notification status to 'accepted'
+        if action == 'accept':
+            notification.status = 'accepted'
             notification.save()
 
-            logger.warning(f"Token expired for notification ID {notification.id}. Generated new token.")
-
-            verification_link = f"{settings.SITE_URL}/verify/{new_token}"
-            try:
-                send_mail(
-                    'New Verification Token',
-                    f'Hi {notification.name},\n\n'
-                    f'Your previous token expired. Please verify using this link:\n{verification_link}\n\n'
-                    f'This link expires in 24 hours.',
-                    settings.DEFAULT_FROM_EMAIL,
-                    [notification.email],
-                    fail_silently=False,
-                )
-            except Exception as e:
-                logger.error(f"Failed to send new token email for notification ID {notification.id}: {e}")
-                return Response({
-                    "message": "Token renewed, but failed to send email.",
-                    "status": "partial_error"
-                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            return Response({
-                "message": "Token expired. A new link has been sent.",
-                "status": "token_renewed"
-            }, status=status.HTTP_200_OK)
-
-        # Mark as verified
-        notification.is_verified = True
-        notification.verification_token = None
-        notification.save()
-
-        try:
-            send_mail(
-                'Notification Confirmed',
-                f'Hi {notification.name},\n\n'
-                f'Your notification has been verified for {notification.scheduled_date}.',
-                settings.DEFAULT_FROM_EMAIL,
-                [notification.email],
-                fail_silently=False,
+            return Response(
+                {'message': 'Notification accepted successfully.'},
+                status=status.HTTP_200_OK
             )
-        except Exception as e:
-            logger.error(f"Failed to send confirmation email for notification ID {notification.id}: {e}")
 
-        return Response({
-            "message": "Notification verified successfully",
-            "status": "success"
-        }, status=status.HTTP_200_OK)
+        # If the action is 'reject', set the notification status to 'rejected'
+        if action == 'reject':
+            notification.status = 'rejected'
+            notification.save()
+
+            return Response(
+                {'message': 'Notification rejected successfully.'},
+                status=status.HTTP_200_OK
+            )
